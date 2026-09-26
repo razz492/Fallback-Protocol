@@ -58,3 +58,54 @@ Open [http://localhost:3000](http://localhost:3000).
 for `localhost` because it's an unrecognized origin. Click through ("Confirm
 Unsafe" / "Proceed") — this is expected and does not indicate a problem with
 the app. These warnings disappear on the deployed HTTPS domain.
+
+## Robot Client Architecture
+
+### What is robot_client.py?
+
+`robot_client.py` is **not a ROS 2 node**. It is a standalone Python script that:
+
+1. Performs Solana on-chain transactions (escrow, stakes) using `solders` and `solana.rpc`
+2. Calls the dashboard's REST API (`/api/robot`) to notify it of state changes (ready, locked, resolved, slashed)
+3. Uses an ngrok tunnel (`https://gatherer-shopping-yam.ngrok-free.dev`) to reach the dashboard when it's not on localhost
+
+It does NOT:
+- Run as a ROS 2 node
+- Register with the ROS master
+- Expose ROS services or topics
+- Appear in `ros2 node list`, `ros2 service list`, or network scans
+
+### Why network scanning can't find robot_client.py
+
+Network scanning tools look for ROS-registered nodes and services. Since `robot_client.py` is not a ROS entity, it won't appear in any ROS discovery tool.
+
+If you need to verify the robot client is running:
+```bash
+ps aux | grep robot_client.py
+# Or check the ngrok tunnel status
+curl -s https://gatherer-shopping-yam.ngrok-free.dev/api/robot
+```
+
+### The ROS 2 side (what IS discoverable)
+
+The actual ROS 2 nodes run via `start_teleop.sh`:
+- Gazebo simulation (`turtlebot3_gazebo`)
+- ROSBridge WebSocket (`rosbridge_server` on port 9090)
+- Web Video Server (`web_video_server` on port 8080)
+
+These ARE discoverable via `ros2 node list` and the dashboard connects to them via:
+- WebSocket: `ws://127.0.0.1:9090` (ROSBridge)
+- HTTP stream: `http://127.0.0.1:8080/stream` (web_video_server)
+
+### The ngrok tunnel
+
+The ngrok tunnel (`gatherer-shopping-yam.ngrok-free.dev`) exists so that
+`robot_client.py` can call the dashboard API when the dashboard runs on
+Vercel or a different machine. It is a one-way notification channel
+(robot → dashboard), not a bidirectional ROS connection.
+
+The dashboard's ROS connection (WebSocket to port 9090) is always to
+`127.0.0.1` (localhost) — this means the ROS nodes must run on the same
+machine as the browser. For remote ROS access, rosbridge would need to
+listen on a non-localhost interface or use a tunnel.
+
