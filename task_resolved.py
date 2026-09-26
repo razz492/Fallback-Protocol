@@ -1,7 +1,7 @@
 import requests
 
-# 🌐 YOUR NGROK STATIC DOMAIN
-DASHBOARD_API_URL = "https://gatherer-shopping-yam.ngrok-free.dev/api/robot"
+# 🌐 DASHBOARD API ENDPOINT
+DASHBOARD_API_URL = "https://operator-dashboard-wine.vercel.app/api/robot"
 
 print("=========================================")
 print("  FALLBACK PROTOCOL - WATCHDOG SENSOR    ")
@@ -17,16 +17,13 @@ payload = {
     "tx": None
 }
 
-# Localhost notification
-try:
-    requests.post("http://localhost:3000/api/robot", json=payload, timeout=2)
-    print("\n📡 [LOCAL] Success! Localhost dashboard updated.")
-except Exception:
-    pass
-
-# Ngrok notification
+# Try Vercel deployment first, fall back to localhost
 try:
     requests.post(DASHBOARD_API_URL, json=payload, timeout=3)
-    print("📡 [SERVER] Success! Ngrok dashboard updated.")
-except Exception as e:
-    print(f"\n⚠️ [NETWORK ERROR] Could not reach Ngrok Dashboard at {DASHBOARD_API_URL}")
+    print("📡 [VERCEL] Dashboard updated.")
+except Exception:
+    try:
+        requests.post("http://localhost:3000/api/robot", json=payload, timeout=2)
+        print("\n📡 [LOCAL] Success! Localhost dashboard updated.")
+    except Exception:
+        pass

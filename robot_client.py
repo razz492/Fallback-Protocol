@@ -14,9 +14,9 @@ from solders.message import MessageV0
 from solders.transaction import VersionedTransaction
 from session_manager import increment_session_id, set_session_state
 
-# 🌐 YOUR NGROK STATIC DOMAIN ENDPOINTS
-DASHBOARD_API_URL = "https://gatherer-shopping-yam.ngrok-free.dev/api/robot"
-SESSION_API_URL = "https://gatherer-shopping-yam.ngrok-free.dev/api/session"
+# 🌐 DASHBOARD API ENDPOINTS
+DASHBOARD_API_URL = "https://operator-dashboard-wine.vercel.app/api/robot"
+SESSION_API_URL  = "https://operator-dashboard-wine.vercel.app/api/session"
 
 def get_discriminator(instruction_name: str) -> bytes:
     preimage = f"global:{instruction_name}".encode('utf-8')
@@ -27,39 +27,35 @@ def signal_dashboard_ready():
     payload = {
         "ready": True,
         "slashed": False,
-        "resolved": False, 
+        "resolved": False,
         "tx": None
     }
-    # Notify localhost dashboard directly
-    try:
-        requests.post("http://localhost:3000/api/robot", json=payload, timeout=2)
-        print("✅ Local dashboard unlocked.")
-    except Exception:
-        pass
-    # Also notify ngrok if available
+    # Try Vercel deployment first, fall back to localhost
     try:
         requests.post(DASHBOARD_API_URL, json=payload, timeout=3)
-        print("✅ [📡 SERVER] Ngrok dashboard unlocked.")
+        print("✅ [📡 VERCEL] Dashboard unlocked.")
     except Exception:
-        pass
+        try:
+            requests.post("http://localhost:3000/api/robot", json=payload, timeout=2)
+            print("✅ Local dashboard unlocked.")
+        except Exception:
+            pass
 
 def alert_session_locked(session_id: int):
-    """Mark escrow ready locally (dashboard file) and via localhost/ngrok APIs."""
+    """Mark session as locked and notify dashboard."""
     set_session_state(session_id=session_id, status="locked")
     print(f"✅ Local session_config.json → session_id={session_id}, status=locked")
     payload = {"session_id": session_id, "status": "locked"}
-    # Notify localhost dashboard immediately
-    try:
-        requests.post("http://localhost:3000/api/session", json=payload, timeout=2)
-        print("✅ Local dashboard notified.")
-    except Exception:
-        pass
-    # Also notify ngrok if configured
+    # Try Vercel deployment first, fall back to localhost
     try:
         requests.post(SESSION_API_URL, json=payload, timeout=3)
-        print("✅ Dashboard notified via ngrok.")
+        print("✅ Dashboard notified via Vercel.")
     except Exception:
-        pass
+        try:
+            requests.post("http://localhost:3000/api/session", json=payload, timeout=2)
+            print("✅ Local dashboard notified.")
+        except Exception:
+            pass
 
 async def main():
     print("=========================================")

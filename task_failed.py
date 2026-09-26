@@ -11,8 +11,8 @@ from solders.message import MessageV0
 from solders.transaction import VersionedTransaction
 from session_manager import get_current_session_id
 
-# 🌐 YOUR NGROK STATIC DOMAIN
-DASHBOARD_API_URL = "https://gatherer-shopping-yam.ngrok-free.dev/api/robot"
+# 🌐 DASHBOARD API ENDPOINT
+DASHBOARD_API_URL = "https://operator-dashboard-wine.vercel.app/api/robot"
 
 def get_discriminator(instruction_name: str) -> bytes:
     preimage = f"global:{instruction_name}".encode('utf-8')
@@ -74,16 +74,14 @@ async def main():
             "tx": str(sig.value)
         }
         try:
-            requests.post("http://localhost:3000/api/robot", json=slash_payload, timeout=2)
-            print("📡 [LOCAL] Alerted Localhost Operator UI of the Slash Transaction!")
-        except Exception:
-            pass
-
-        try:
             requests.post(DASHBOARD_API_URL, json=slash_payload, timeout=3)
-            print("📡 [SERVER] Alerted Operator UI of the Slash Transaction!")
-        except Exception as api_e:
-            print(f"⚠️ [NETWORK ERROR] Could not notify Next.js UI: {api_e}")
+            print("📡 [VERCEL] Alerted Operator UI of the Slash Transaction!")
+        except Exception:
+            try:
+                requests.post("http://localhost:3000/api/robot", json=slash_payload, timeout=2)
+                print("📡 [LOCAL] Alerted Operator UI of the Slash Transaction!")
+            except Exception:
+                pass
 
     except Exception as e:
         print(f"❌ Slashing Failed. Operator might have resolved it in time. Error: {e}")
