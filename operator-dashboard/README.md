@@ -37,13 +37,13 @@ Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/bui
 
 ## Live Deployment
 
-The operator dashboard is deployed at [**operator-dashboard-wine.vercel.app**](https://operator-dashboard-wine.vercel.app).
+**https://operator-dashboard-wine.vercel.app**
 
 ### Environment Variables
 
 | Variable | Value | Description |
 |---|---|---|
-| `NEXT_PUBLIC_SOLANA_RPC` | `https://solana-devnet.g.alchemy.com/v2/alch_18IfjxfhzdbYvYEbUivwJ` | Solana Devnet RPC endpoint (Alchemy) |
+| `NEXT_PUBLIC_SOLANA_RPC` | `https://solana-devnet.g.alchemy.com/v2/alch_18IfjxfhzdbYvYEbUivwJ` | Solana Devnet RPC (Alchemy) |
 
 ### Local Development
 
