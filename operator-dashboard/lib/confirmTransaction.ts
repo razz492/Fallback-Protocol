@@ -1,19 +1,20 @@
-import { Connection, Commitment } from "@solana/web3.js";
+import { Connection, Commitment, Finality, PublicKey } from "@solana/web3.js";
 
 export type ConfirmationResult =
-  | { status: "confirmed"; signature: string; blockNumber: number }
-  | { status: "finalized"; signature: string; blockNumber: number }
+  | { status: "confirmed"; signature: string; slot: number }
+  | { status: "finalized"; signature: string; slot: number }
   | { status: "expired"; signature: string; reason: string }
   | { status: "timeout"; signature: string; reason: string };
 
 const POLL_INTERVAL_MS = 1500;
-const MAX_ATTEMPTS = 40; // ~60 seconds total
+const MAX_ATTEMPTS = 80; // ~120 seconds total
 
 export async function pollSignatureConfirmation(
   connection: Connection,
   signature: string,
   commitment: Commitment = "confirmed",
-  timeoutMs: number = 30000
+  timeoutMs: number = 60000,
+  publicKey?: PublicKey
 ): Promise<ConfirmationResult> {
   const startTime = Date.now();
 
@@ -23,34 +24,52 @@ export async function pollSignatureConfirmation(
     }
 
     try {
-      const result = await connection.getSignatureStatus(signature, {
+      // Primary: getSignatureStatus (fast, checks recent status cache)
+      const statusResult = await connection.getSignatureStatus(signature, {
         searchTransactionHistory: true,
       });
 
-      const status = result.value;
+      const status = statusResult.value;
 
-      if (!status) {
-        // Not found in recent slots — wait and retry
-        await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
-        continue;
+      if (status) {
+        if (status.err) {
+          return { status: "expired", signature, reason: `Transaction failed: ${status.err}` };
+        }
+
+        if (status.confirmationStatus) {
+          if (commitment === "finalized" && status.confirmationStatus === "finalized") {
+            return { status: "finalized", signature, slot: status.slot };
+          }
+          if (commitment === "confirmed" && status.confirmationStatus === "confirmed") {
+            return { status: "confirmed", signature, slot: status.slot };
+          }
+          if (
+            commitment === "processed" &&
+            ["processed", "confirmed", "finalized"].includes(status.confirmationStatus)
+          ) {
+            return { status: "confirmed", signature, slot: status.slot };
+          }
+        }
       }
 
-      if (status.err) {
-        return { status: "expired", signature, reason: `Transaction failed: ${status.err}` };
-      }
-
-      if (status.confirmationStatus) {
-        if (commitment === "finalized" && status.confirmationStatus === "finalized") {
-          return { status: "finalized", signature, blockNumber: status.slot };
-        }
-        if (commitment === "confirmed" && status.confirmationStatus === "confirmed") {
-          return { status: "confirmed", signature, blockNumber: status.slot };
-        }
-        if (
-          commitment === "processed" &&
-          ["processed", "confirmed", "finalized"].includes(status.confirmationStatus)
-        ) {
-          return { status: "confirmed", signature, blockNumber: status.slot };
+      // Fallback: getTransaction — more reliable for recently-submitted txs
+      // getSignatureStatus can return null for transactions not yet in the status cache
+      if (publicKey) {
+        try {
+          const tx = await connection.getTransaction(signature, {
+            commitment: commitment as Finality,
+            maxSupportedTransactionVersion: 0,
+          });
+          if (tx) {
+            // Transaction found on-chain — check its status
+            if (tx.meta?.err) {
+              return { status: "expired", signature, reason: `Transaction failed in block` };
+            }
+            // Found and executed successfully — treat as confirmed
+            return { status: "confirmed", signature, slot: tx.slot };
+          }
+        } catch {
+          // getTransaction not found yet or error — keep polling
         }
       }
 

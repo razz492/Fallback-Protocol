@@ -370,8 +370,8 @@ export default function Home() {
 
             setStatus("⏳ Confirming transaction on Devnet...");
             const confirmation = await withTimeout(
-                pollSignatureConfirmation(connection, signature, "confirmed", 30000),
-                30000,
+                pollSignatureConfirmation(connection, signature, "confirmed", 60000, publicKey),
+                60000,
                 "Transaction confirmation"
             );
             if (confirmation.status === "timeout" || confirmation.status === "expired") {
@@ -467,8 +467,8 @@ export default function Home() {
             setStatus("⏳ Confirming claim on Devnet...");
 
             const confirmation = await withTimeout(
-                pollSignatureConfirmation(connection, signature, "confirmed", 30000),
-                30000,
+                pollSignatureConfirmation(connection, signature, "confirmed", 60000, publicKey),
+                60000,
                 "Transaction confirmation"
             );
 
