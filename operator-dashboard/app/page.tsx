@@ -71,6 +71,13 @@ export default function Home() {
     const [resolveSignature, setResolveSignature] = useState<string | null>(null);
     const [showReceiptModal, setShowReceiptModal] = useState<boolean>(false);
     const [isTaskCleared, setIsTaskCleared] = useState<boolean>(false);
+    const [isLocalhost, setIsLocalhost] = useState<boolean>(false);
+
+    // Defer localhost detection to client side to avoid hydration mismatch.
+    // SSR renders without the warning; client adds it after mounting.
+    useEffect(() => {
+        setIsLocalhost(window.location.hostname === 'localhost');
+    }, []);
 
     const [rosConnected, setRosConnected] = useState<boolean>(false);
     const [activeKeys, setActiveKeys] = useState<{ [key: string]: boolean }>({});
@@ -624,7 +631,7 @@ export default function Home() {
         return (
             <main className="flex min-h-screen flex-col items-center justify-center bg-slate-950 font-mono p-4 relative overflow-hidden">
                 <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[800px] h-[800px] bg-emerald-900/20 rounded-full blur-[100px] pointer-events-none"></div>
-                {typeof window !== "undefined" && window.location.hostname === "localhost" && (
+                {isLocalhost && (
                     <div className="absolute top-0 left-0 right-0 z-20 bg-amber-900/30 border-b border-amber-700/50 px-4 py-2 text-center">
                         <p className="text-sm text-amber-300">
                             ⚠️ Local dev mode — wallet extensions may show security warnings for
