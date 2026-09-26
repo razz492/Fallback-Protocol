@@ -135,16 +135,13 @@ async def main():
     print(f"🚨 [🤖 ROBOT] Alerting Dispatch Server...")
     alert_session_locked(session_id)
 
-    # 4. Wait for you to control the demo pace
-    print("\n" + "="*50)
-    input("⏸️  DEMO PAUSED: Go click 'Stake & Accept' on your dashboard, then press [ENTER] here to unlock the robot...")
-    print("="*50 + "\n")
-    
-    # 5. Unlock the robot for the operator
+    # 4. Signal the dashboard and unlock the robot
     print("🔓 [🤖 ROBOT] Operator Solana stake verified via PDA state change.")
     print("🔓 [🤖 ROBOT] Safety locks disengaged. Yielding /cmd_vel control to remote operator...")
-    
+
     signal_dashboard_ready()
+
+    await client.close()
 
     await client.close()
 
