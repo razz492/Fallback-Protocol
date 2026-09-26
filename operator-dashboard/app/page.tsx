@@ -2,7 +2,7 @@
 
 import { useConnection, useWallet } from '@solana/wallet-adapter-react';
 import dynamic from 'next/dynamic';
-import { PublicKey, SystemProgram, Transaction, TransactionInstruction, VersionedTransaction, TransactionMessage } from '@solana/web3.js';
+import { PublicKey, SystemProgram, Transaction, TransactionInstruction, VersionedTransaction, TransactionMessage, ComputeBudgetProgram } from '@solana/web3.js';
 import { useState, useEffect, useRef } from 'react';
 import { Program, AnchorProvider, BN } from "@coral-xyz/anchor";
 import idl from "./idl/fallback_protocol.json";
@@ -334,13 +334,49 @@ export default function Home() {
                 const messageV0 = new TransactionMessage({
                     payerKey: publicKey,
                     recentBlockhash: latestBlockhash.blockhash,
-                    instructions: [acceptTaskIx],
+                    instructions: [
+                        ComputeBudgetProgram.setComputeUnitLimit({ units: 200_000 }),
+                        acceptTaskIx,
+                    ],
                 }).compileToV0Message();
 
                 const transaction = new VersionedTransaction(messageV0);
-                console.log("[acceptTask] Transaction compiled. Calling sendTransaction...");
+                console.log("[acceptTask] Transaction compiled. Running local simulation...");
+
+                // Simulate locally with sigVerify: false to test instruction logic
+                // without requiring signatures (transaction is unsigned at this point).
+                // Omitting sigVerify (defaulting to true) can cause Phantom's own
+                // pre-approval simulation to fail even when the instruction is valid.
+                const debugSim = await withTimeout(
+                    connection.simulateTransaction(transaction, {
+                        commitment: 'confirmed',
+                        sigVerify: false,
+                    }),
+                    10000,
+                    'Local simulation'
+                );
+                if (debugSim.value.err) {
+                    console.error("[acceptTask] Local simulation FAILED:",
+                        JSON.stringify(debugSim.value.err, null, 2));
+                } else {
+                    console.log("[acceptTask] Local simulation OK.",
+                        debugSim.value.returnData
+                            ? `return data: ${JSON.stringify(debugSim.value.returnData)}`
+                            : 'no return data');
+                }
+
+                // Log instruction details for comparing local vs Phantom simulation
+                console.log("[acceptTask] Instruction programId:", acceptTaskIx.programId.toBase58());
+                console.log("[acceptTask] Instruction accounts:", acceptTaskIx.keys.map(k =>
+                    `${k.pubkey.toBase58()}: ${k.isSigner ? 'signer' : 'readonly'}/${k.isWritable ? 'writable' : 'readonly'}`
+                ).join(', '));
+                console.log("[acceptTask] Instruction data (hex):", Buffer.from(acceptTaskIx.data).toString('hex'));
+                console.log("[acceptTask] Operator:", publicKey.toBase58());
+                console.log("[acceptTask] Session PDA:", sessionPda.toBase58());
+                console.log("[acceptTask] Blockhash:", latestBlockhash.blockhash.toString());
 
                 setStatus("🔐 Check your wallet extension — approve transaction...");
+                console.log("[acceptTask] Calling sendTransaction...");
                 signature = await withTimeout(
                     sendTransaction(transaction, connection, {
                         skipPreflight: true,
@@ -432,10 +468,38 @@ export default function Home() {
                 const messageV0 = new TransactionMessage({
                     payerKey: publicKey,
                     recentBlockhash: latestBlockhash.blockhash,
-                    instructions: [resolveTaskIx],
+                    instructions: [
+                        ComputeBudgetProgram.setComputeUnitLimit({ units: 200_000 }),
+                        resolveTaskIx,
+                    ],
                 }).compileToV0Message();
 
                 const transaction = new VersionedTransaction(messageV0);
+
+                // Simulate locally with sigVerify: false before sending.
+                const debugSim = await withTimeout(
+                    connection.simulateTransaction(transaction, {
+                        commitment: 'confirmed',
+                        sigVerify: false,
+                    }),
+                    10000,
+                    'Local simulation'
+                );
+                if (debugSim.value.err) {
+                    console.error("[resolveTask] Local simulation FAILED:",
+                        JSON.stringify(debugSim.value.err, null, 2));
+                } else {
+                    console.log("[resolveTask] Local simulation OK.",
+                        debugSim.value.returnData
+                            ? `return data: ${JSON.stringify(debugSim.value.returnData)}`
+                            : 'no return data');
+                }
+
+                console.log("[resolveTask] Instruction programId:", resolveTaskIx.programId.toBase58());
+                console.log("[resolveTask] Instruction accounts:", resolveTaskIx.keys.map(k =>
+                    `${k.pubkey.toBase58()}: ${k.isSigner ? 'signer' : 'readonly'}/${k.isWritable ? 'writable' : 'readonly'}`
+                ).join(', '));
+                console.log("[resolveTask] Instruction data (hex):", Buffer.from(resolveTaskIx.data).toString('hex'));
 
                 setStatus("🔐 Check your wallet extension — approve claim...");
                 signature = await withTimeout(
