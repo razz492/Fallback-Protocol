@@ -8,6 +8,7 @@ import { Program, AnchorProvider, BN } from "@coral-xyz/anchor";
 import idl from "./idl/fallback_protocol.json";
 import { pollSignatureConfirmation } from "@/lib/confirmTransaction";
 import Link from "next/link";
+import { WalletHelpModal } from "../components/WalletHelpModal";
 
 const WalletMultiButton = dynamic(
     async () => (await import('@solana/wallet-adapter-react-ui')).WalletMultiButton,
@@ -576,6 +577,11 @@ export default function Home() {
                     <div className="bg-slate-900/80 backdrop-blur-md p-8 rounded-2xl border border-slate-800 shadow-xl mb-8">
                         <h2 className="text-xl font-semibold text-white mb-4">Operator Login</h2>
                         <p className="text-sm text-slate-400 mb-8">Connect your Solana wallet to access the fleet command center and start earning bounties.</p>
+                        <div className="mb-6 p-3 rounded-lg bg-amber-900/30 border border-amber-800/50 text-xs text-amber-300">
+                            <p className="font-medium mb-1">⚠️ Wallet Security Warning</p>
+                            <p>Your wallet extension (Phantom/Solflare) may show a "site not recognized" or "unsafe" warning when you first connect or sign a transaction. This is normal for new domains.</p>
+                            <p className="mt-1"><strong>To resolve:</strong> In Phantom, click "Approve" or "Trust" this site. In Solflare, click "Approve" or add the site to your trusted list. Once approved, the warning won't appear again.</p>
+                        </div>
                         <div className="flex justify-center">
                             <WalletMultiButton style={{ backgroundColor: '#10b981', padding: '0 32px', height: '48px', fontSize: '16px' }} />
                         </div>
