@@ -17,8 +17,11 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Operator Dashboard",
-  description: "Fallback Protocol Operator Dashboard",
+  title: "Fallback Protocol — Operator Dashboard",
+  description: "Teleoperation command center for the Fallback Protocol Solana program. Monitor robots, accept tasks, and resolve incidents.",
+  icons: {
+    icon: "/favicon.svg",
+  },
 };
 
 export default function RootLayout({

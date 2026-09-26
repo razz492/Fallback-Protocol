@@ -34,3 +34,27 @@ You can check out [the Next.js GitHub repository](https://github.com/vercel/next
 The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
 
 Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+
+## Live Deployment
+
+The operator dashboard is deployed at [**operator-dashboard-wine.vercel.app**](https://operator-dashboard-wine.vercel.app).
+
+### Environment Variables
+
+| Variable | Value | Description |
+|---|---|---|
+| `NEXT_PUBLIC_SOLANA_RPC` | `https://solana-devnet.g.alchemy.com/v2/alch_18IfjxfhzdbYvYEbUivwJ` | Solana Devnet RPC endpoint (Alchemy) |
+
+### Local Development
+
+```bash
+cd operator-dashboard
+npm run dev
+```
+
+Open [http://localhost:3000](http://localhost:3000).
+
+**Wallet warnings on localhost:** Phantom and Solflare show security warnings
+for `localhost` because it's an unrecognized origin. Click through ("Confirm
+Unsafe" / "Proceed") — this is expected and does not indicate a problem with
+the app. These warnings disappear on the deployed HTTPS domain.

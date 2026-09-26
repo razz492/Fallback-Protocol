@@ -7,6 +7,7 @@ import { useState, useEffect, useRef } from 'react';
 import { Program, AnchorProvider, BN } from "@coral-xyz/anchor";
 import idl from "./idl/fallback_protocol.json";
 import { pollSignatureConfirmation } from "@/lib/confirmTransaction";
+import Link from "next/link";
 
 const WalletMultiButton = dynamic(
     async () => (await import('@solana/wallet-adapter-react-ui')).WalletMultiButton,
@@ -558,6 +559,15 @@ export default function Home() {
         return (
             <main className="flex min-h-screen flex-col items-center justify-center bg-slate-950 font-mono p-4 relative overflow-hidden">
                 <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[800px] h-[800px] bg-emerald-900/20 rounded-full blur-[100px] pointer-events-none"></div>
+                {typeof window !== "undefined" && window.location.hostname === "localhost" && (
+                    <div className="absolute top-0 left-0 right-0 z-20 bg-amber-900/30 border-b border-amber-700/50 px-4 py-2 text-center">
+                        <p className="text-sm text-amber-300">
+                            ⚠️ Local dev mode — wallet extensions may show security warnings for
+                            <code className="bg-amber-900/50 px-1 rounded ml-1">localhost</code>.
+                            Click through to proceed.
+                        </p>
+                    </div>
+                )}
                 <div className="z-10 text-center max-w-lg">
                     <div className="mb-8 inline-block p-4 rounded-2xl bg-slate-900 border border-slate-800 shadow-2xl">
                         <h1 className="text-4xl font-bold text-transparent bg-clip-text bg-gradient-to-r from-emerald-400 to-blue-500 mb-2">Fallback Protocol</h1>
