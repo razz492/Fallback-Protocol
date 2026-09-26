@@ -47,7 +47,7 @@ pub mod fallback_protocol {
         session.operator = ctx.accounts.operator.key();
         session.operator_bond = operator_bond;
         session.status = 1; // 1 = Active
-        session.timeout_at = clock.unix_timestamp + 20;
+        session.timeout_at = clock.unix_timestamp + 300; // 5 minutes SLA for teleoperation
 
         // CPI to transfer the operator's bond lamports into the Session PDA
         let cpi_context = CpiContext::new(

@@ -1,0 +1,263 @@
+{
+  "address": "H8FYdjnCybk2vzbAKKKUbCiQQrohEjAwCXCo11gETnqT",
+  "metadata": {
+    "name": "fallback_protocol",
+    "version": "0.1.0",
+    "spec": "0.1.0",
+    "description": "Created with Anchor"
+  },
+  "instructions": [
+    {
+      "name": "accept_task",
+      "discriminator": [
+        222,
+        196,
+        79,
+        165,
+        120,
+        30,
+        38,
+        120
+      ],
+      "accounts": [
+        {
+          "name": "operator",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "session",
+          "writable": true
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "operator_bond",
+          "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "cancel_timeout",
+      "discriminator": [
+        26,
+        110,
+        181,
+        18,
+        120,
+        25,
+        207,
+        14
+      ],
+      "accounts": [
+        {
+          "name": "robot",
+          "writable": true,
+          "signer": true,
+          "relations": [
+            "session"
+          ]
+        },
+        {
+          "name": "session",
+          "writable": true
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "request_fallback",
+      "discriminator": [
+        246,
+        139,
+        172,
+        10,
+        233,
+        35,
+        104,
+        159
+      ],
+      "accounts": [
+        {
+          "name": "robot",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "session",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  101,
+                  115,
+                  115,
+                  105,
+                  111,
+                  110
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "robot"
+              },
+              {
+                "kind": "arg",
+                "path": "session_id"
+              }
+            ]
+          }
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "session_id",
+          "type": "u64"
+        },
+        {
+          "name": "bounty",
+          "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "resolve_task",
+      "discriminator": [
+        116,
+        245,
+        180,
+        251,
+        30,
+        233,
+        101,
+        33
+      ],
+      "accounts": [
+        {
+          "name": "operator",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "session",
+          "writable": true
+        }
+      ],
+      "args": [
+        {
+          "name": "telemetry_hash",
+          "type": {
+            "array": [
+              "u8",
+              32
+            ]
+          }
+        }
+      ]
+    }
+  ],
+  "accounts": [
+    {
+      "name": "Session",
+      "discriminator": [
+        243,
+        81,
+        72,
+        115,
+        214,
+        188,
+        72,
+        144
+      ]
+    }
+  ],
+  "errors": [
+    {
+      "code": 6000,
+      "name": "SessionNotOpen",
+      "msg": "This session is no longer open for operators."
+    },
+    {
+      "code": 6001,
+      "name": "SessionNotActive",
+      "msg": "This session is not currently active."
+    },
+    {
+      "code": 6002,
+      "name": "SessionExpired",
+      "msg": "This session has expired."
+    },
+    {
+      "code": 6003,
+      "name": "UnauthorizedOperator",
+      "msg": "You are not the authorized operator for this session."
+    },
+    {
+      "code": 6004,
+      "name": "TimeoutNotReached",
+      "msg": "The timeout period has not yet been reached."
+    }
+  ],
+  "types": [
+    {
+      "name": "Session",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "session_id",
+            "type": "u64"
+          },
+          {
+            "name": "robot",
+            "type": "pubkey"
+          },
+          {
+            "name": "operator",
+            "type": "pubkey"
+          },
+          {
+            "name": "bounty",
+            "type": "u64"
+          },
+          {
+            "name": "operator_bond",
+            "type": "u64"
+          },
+          {
+            "name": "status",
+            "type": "u8"
+          },
+          {
+            "name": "created_at",
+            "type": "i64"
+          },
+          {
+            "name": "timeout_at",
+            "type": "i64"
+          },
+          {
+            "name": "telemetry_hash",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          }
+        ]
+      }
+    }
+  ]
+}

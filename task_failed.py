@@ -2,7 +2,7 @@ import asyncio
 import json
 import os
 import hashlib
-import urllib.request # --- NEW: to send the signal to Next.js ---
+import requests # --- UPDATED: Using requests for consistency ---
 from solana.rpc.async_api import AsyncClient
 from solders.pubkey import Pubkey
 from solders.keypair import Keypair
@@ -11,12 +11,19 @@ from solders.message import MessageV0
 from solders.transaction import VersionedTransaction
 from session_manager import get_current_session_id
 
+# 🌐 YOUR NGROK STATIC DOMAIN
+DASHBOARD_API_URL = "https://gatherer-shopping-yam.ngrok-free.dev/api/robot"
+
 def get_discriminator(instruction_name: str) -> bytes:
     preimage = f"global:{instruction_name}".encode('utf-8')
     return hashlib.sha256(preimage).digest()[:8]
 
 async def main():
+    print("=========================================")
+    print("  FALLBACK PROTOCOL - WATCHDOG SENSOR    ")
+    print("=========================================")
     print("🤖 [Robot] Watchdog Process Started...")
+    
     client = AsyncClient("https://api.devnet.solana.com")
     
     with open(os.path.expanduser("~/.config/solana/id.json"), 'r') as f:
@@ -40,7 +47,9 @@ async def main():
     ]
     
     ix_cancel = Instruction(program_id=program_id, accounts=keys, data=discriminator)
-    print("⚠️  Operator exceeded time limit. Executing SLASH protocol...")
+    print("🚨 [🤖 ROBOT] CRITICAL: Operator failed to resolve incident within SLA time limit.")
+    print("🚨 [🤖 ROBOT] Executing Slaughter Protocol...")
+    print("⚠️  Operator exceeded time limit. Executing SLASH protocol on-chain...")
     
     try:
         recent_blockhash = (await client.get_latest_blockhash()).value.blockhash
@@ -55,17 +64,26 @@ async def main():
         
         print("✅ SLASH SUCCESSFUL!")
         print("💰 Robot reclaimed 0.1 SOL Bounty + stole Operator's 0.05 SOL Bond.")
-        print(f"🔗 View on Solscan: https://solscan.io/tx/{sig.value}?cluster=devnet")
+        print(f"🔗 View on Solscan: https://explorer.solana.com/tx/{sig.value}?cluster=devnet")
 
-        # --- NEW: Send the exact signature to the Next.js UI ---
+        # --- UPDATED: Send the exact signature to the Next.js UI via Localhost + Ngrok ---
+        slash_payload = {
+            "ready": True,
+            "slashed": True,
+            "resolved": False,
+            "tx": str(sig.value)
+        }
         try:
-            url = "http://localhost:3000/api/robot"
-            payload = json.dumps({"slashed": True, "tx": str(sig.value)}).encode('utf-8')
-            req = urllib.request.Request(url, data=payload, headers={'Content-Type': 'application/json'})
-            urllib.request.urlopen(req)
-            print("📡 Alerted Operator UI of the Slash Transaction!")
+            requests.post("http://localhost:3000/api/robot", json=slash_payload, timeout=2)
+            print("📡 [LOCAL] Alerted Localhost Operator UI of the Slash Transaction!")
+        except Exception:
+            pass
+
+        try:
+            requests.post(DASHBOARD_API_URL, json=slash_payload, timeout=3)
+            print("📡 [SERVER] Alerted Operator UI of the Slash Transaction!")
         except Exception as api_e:
-            print(f"⚠️ Could not notify Next.js UI: {api_e}")
+            print(f"⚠️ [NETWORK ERROR] Could not notify Next.js UI: {api_e}")
 
     except Exception as e:
         print(f"❌ Slashing Failed. Operator might have resolved it in time. Error: {e}")

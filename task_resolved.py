@@ -1,20 +1,32 @@
-import urllib.request
-import json
+import requests
 
-def main():
-    print("🤖 [Robot] Teleoperation successful!")
-    print("📡 Sending clearance signal to Operator Command Center...")
-    
-    url = "http://localhost:3000/api/robot"
-    data = json.dumps({"ready": True}).encode('utf-8')
-    req = urllib.request.Request(url, data=data, headers={'Content-Type': 'application/json'})
-    
-    try:
-        urllib.request.urlopen(req)
-        print("✅ Signal received! The Operator UI has unlocked the 'Claim Bounty' button.")
-    except Exception as e:
-        print(f"❌ Failed to send signal to Next.js API: {e}")
-        print("Make sure your Next.js server is running on localhost:3000")
+# 🌐 YOUR NGROK STATIC DOMAIN
+DASHBOARD_API_URL = "https://gatherer-shopping-yam.ngrok-free.dev/api/robot"
 
-if __name__ == "__main__":
-    main()
+print("=========================================")
+print("  FALLBACK PROTOCOL - WATCHDOG SENSOR    ")
+print("=========================================")
+print("✅ [🤖 ROBOT] Sensor check: Deadlock cleared! Path is safe.")
+print("✅ [🤖 ROBOT] Re-engaging local AI autonomy loop...")
+print("✅ [🤖 ROBOT] Informing server to release Operator bounty...")
+
+payload = {
+    "ready": True, 
+    "slashed": False, 
+    "resolved": True,  # <-- This unlocks the Claim button!
+    "tx": None
+}
+
+# Localhost notification
+try:
+    requests.post("http://localhost:3000/api/robot", json=payload, timeout=2)
+    print("\n📡 [LOCAL] Success! Localhost dashboard updated.")
+except Exception:
+    pass
+
+# Ngrok notification
+try:
+    requests.post(DASHBOARD_API_URL, json=payload, timeout=3)
+    print("📡 [SERVER] Success! Ngrok dashboard updated.")
+except Exception as e:
+    print(f"\n⚠️ [NETWORK ERROR] Could not reach Ngrok Dashboard at {DASHBOARD_API_URL}")

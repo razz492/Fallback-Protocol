@@ -2,8 +2,11 @@
 
 import { useConnection, useWallet } from '@solana/wallet-adapter-react';
 import dynamic from 'next/dynamic';
-import { PublicKey, Transaction, SystemProgram, TransactionInstruction } from '@solana/web3.js';
+import { PublicKey, SystemProgram, Transaction, TransactionInstruction, VersionedTransaction, TransactionMessage } from '@solana/web3.js';
 import { useState, useEffect, useRef } from 'react';
+import { Program, AnchorProvider, BN } from "@coral-xyz/anchor";
+import idl from "./idl/fallback_protocol.json";
+import { pollSignatureConfirmation } from "@/lib/confirmTransaction";
 
 const WalletMultiButton = dynamic(
     async () => (await import('@solana/wallet-adapter-react-ui')).WalletMultiButton,
@@ -12,6 +15,9 @@ const WalletMultiButton = dynamic(
 
 const PROGRAM_ID = new PublicKey("H8FYdjnCybk2vzbAKKKUbCiQQrohEjAwCXCo11gETnqT");
 const ROBOT_PUBKEY = new PublicKey("9kRjRmidhpzdCUckaG4wRKXmqfnDixT4xz6uppEga6b7");
+
+const SESSION_STATUS_BYTE_OFFSET = 96;
+const SESSION_STATUS_SLASHED = 3;
 
 const PROFILES = {
     delivery: {
@@ -38,8 +44,8 @@ type WorkState = 'lobby' | 'searching' | 'active';
 
 export default function Home() {
     const { connection } = useConnection();
-    const { publicKey, sendTransaction, disconnect, wallet } = useWallet();
-    
+    const { publicKey, connected, sendTransaction, disconnect, wallet } = useWallet();
+
     const [currentTab, setCurrentTab] = useState<NavTab>('work');
     const [workState, setWorkState] = useState<WorkState>('lobby');
     const [totalEarnings, setTotalEarnings] = useState<number>(0);
@@ -48,120 +54,174 @@ export default function Home() {
     const [weeklyEarnings, setWeeklyEarnings] = useState<number[]>([0, 0, 0, 0, 0, 0, 0]);
     const [showWalletDetails, setShowWalletDetails] = useState<boolean>(false);
     const [showDisconnectConfirm, setShowDisconnectConfirm] = useState<boolean>(false);
-    
-    // Training Simulator State
+
     const [isTrainingMode, setIsTrainingMode] = useState<boolean>(false);
 
     const [status, setStatus] = useState<string>("Awaiting Operator Action...");
     const [sessionId, setSessionId] = useState<number | null>(null);
     const [activeProfile, setActiveProfile] = useState<ProfileKey>('delivery');
-    
+
     const [isTaskAccepted, setIsTaskAccepted] = useState<boolean>(false);
     const [isRobotReady, setIsRobotReady] = useState<boolean>(false);
     const [isTaskResolved, setIsTaskResolved] = useState<boolean>(false);
     const [isTaskSlashed, setIsTaskSlashed] = useState<boolean>(false);
-    const [slashSignature, setSlashSignature] = useState<string | null>(null); 
+    const [slashSignature, setSlashSignature] = useState<string | null>(null);
     const [resolveSignature, setResolveSignature] = useState<string | null>(null);
     const [showReceiptModal, setShowReceiptModal] = useState<boolean>(false);
+    const [isTaskCleared, setIsTaskCleared] = useState<boolean>(false);
 
-    // NATIVE WEBSOCKET TELEOPERATION STATE
     const [rosConnected, setRosConnected] = useState<boolean>(false);
     const [activeKeys, setActiveKeys] = useState<{ [key: string]: boolean }>({});
     const wsRef = useRef<WebSocket | null>(null);
     const activeKeysRef = useRef<{ w: boolean, a: boolean, s: boolean, d: boolean }>({ w: false, a: false, s: false, d: false });
 
-    // Initialization & Pollers
+    // -------------------------------------------------------------
+    // UTILITY: Timeout Wrapper for Async Operations
+    // -------------------------------------------------------------
+    const withTimeout = <T,>(promise: Promise<T>, ms: number, label: string): Promise<T> =>
+        Promise.race([
+            promise,
+            new Promise<never>((_, reject) =>
+                setTimeout(() => reject(new Error(`${label} timed out after ${ms / 1000}s`)), ms)
+            ),
+        ]);
+
+    // -------------------------------------------------------------
+    // UTILITY: Foolproof Little-Endian Session PDA Derivation
+    // -------------------------------------------------------------
+    const deriveSessionPda = (rawSessionId: number | string): PublicKey => {
+        const cleanSessionId = parseInt(String(rawSessionId), 10);
+        const sessionIdArray = new Uint8Array(8);
+        new DataView(sessionIdArray.buffer).setBigUint64(0, BigInt(cleanSessionId), true);
+
+        const [sessionPda] = PublicKey.findProgramAddressSync([
+            new TextEncoder().encode("session"),
+            ROBOT_PUBKEY.toBytes(),
+            sessionIdArray
+        ], PROGRAM_ID);
+
+        return sessionPda;
+    };
+
+    // Shared Anchor Program Builder
+    const getProgram = () => {
+        if (!wallet) throw new Error("Wallet not connected");
+        const provider = new AnchorProvider(connection as any, wallet.adapter as any, {
+            preflightCommitment: "confirmed",
+            commitment: "confirmed",
+        });
+        return new Program(idl as any, provider);
+    };
+
+    // 1. Initial Session Check
     useEffect(() => {
-        fetch('/api/session?t=' + new Date().getTime()).then(res => res.json()).then(data => setSessionId(data.session_id)).catch(err => console.error(err));
+        fetch('/api/session?t=' + new Date().getTime())
+            .then(res => res.json())
+            .then(data => {
+                if (data.session_id !== undefined) setSessionId(data.session_id);
+            })
+            .catch(err => console.error(err));
     }, []);
 
+    // 2. Poll for New Incidents
     useEffect(() => {
         if (workState !== 'searching') return;
         const interval = setInterval(async () => {
             try {
                 const res = await fetch('/api/session?t=' + new Date().getTime());
                 const data = await res.json();
-                if (sessionId !== null && data.session_id > sessionId) {
+                if (data.status === 'locked' && sessionId !== null && data.session_id >= sessionId) {
                     setSessionId(data.session_id);
                     setWorkState('active');
-                    setStatus("Waiting for Operator...");
+                    setStatus("Waiting for Operator Stake...");
                 }
             } catch (e) {}
         }, 1500);
         return () => clearInterval(interval);
     }, [workState, sessionId]);
 
+    // 3. Session Status Watchdog (Detects On-Chain Slashing)
     useEffect(() => {
         if (workState !== 'active' || !isTaskAccepted || isTaskResolved || isTaskSlashed || sessionId === null) return;
         const interval = setInterval(async () => {
             try {
-                const cleanSessionId = parseInt(String(sessionId), 10);
-                const sessionIdBuffer = Buffer.alloc(8);
-                let num = BigInt(cleanSessionId);
-                for (let i = 0; i < 8; i++) { sessionIdBuffer[i] = Number(num & BigInt(0xff)); num >>= BigInt(8); }
-                const [sessionPda] = PublicKey.findProgramAddressSync([Buffer.from("session"), ROBOT_PUBKEY.toBuffer(), sessionIdBuffer], PROGRAM_ID);
-                const accInfo = await connection.getAccountInfo(sessionPda);
-                if (accInfo && accInfo.data && accInfo.data[96] === 3) {
-                    setIsTaskSlashed(true);
-                    setStatus("❌ TIMEOUT: Slashed by robot watchdog.");
+                const sessionPda = deriveSessionPda(sessionId);
+
+                // Use Anchor decoder if wallet is connected, else fallback to raw byte check
+                if (wallet) {
+                    const program = getProgram();
+                    const sessionAccount = await (program.account as any).session.fetchNullable(sessionPda);
+                    if (sessionAccount && sessionAccount.status === SESSION_STATUS_SLASHED) {
+                        setIsTaskSlashed(true);
+                        setStatus("❌ TIMEOUT: Slashed by robot watchdog.");
+                    }
+                } else {
+                    const accInfo = await connection.getAccountInfo(sessionPda, 'confirmed');
+                    if (accInfo && accInfo.data && accInfo.data[SESSION_STATUS_BYTE_OFFSET] === SESSION_STATUS_SLASHED) {
+                        setIsTaskSlashed(true);
+                        setStatus("❌ TIMEOUT: Slashed by robot watchdog.");
+                    }
                 }
-            } catch (e) { }
+            } catch (e) {}
         }, 2000);
         return () => clearInterval(interval);
-    }, [workState, isTaskAccepted, isTaskResolved, isTaskSlashed, sessionId, connection]);
+    }, [workState, isTaskAccepted, isTaskResolved, isTaskSlashed, sessionId, connection, wallet]);
 
+    // 4. Poll Local Robot Mock/Daemon API
     useEffect(() => {
         if (workState !== 'active' || !isTaskAccepted || isTaskResolved) return;
         const interval = setInterval(async () => {
             try {
                 const res = await fetch('/api/robot?t=' + new Date().getTime());
                 const data = await res.json();
+
                 if (data.ready && !isTaskSlashed) {
                     setIsRobotReady(true);
-                    setStatus("✅ Robot confirmed clearance! Ready to claim bounty.");
+                    if (data.resolved) {
+                        setIsTaskCleared(true);
+                        setStatus("✅ Robot confirmed clearance! Ready to claim bounty.");
+                    } else {
+                        setStatus("📡 Teleoperation Active: Resolve the deadlock...");
+                    }
                 } else if (data.slashed) {
                     setIsTaskSlashed(true);
-                    setSlashSignature(data.tx); 
+                    setSlashSignature(data.tx);
                     setStatus("❌ TIMEOUT: Slashed by robot watchdog.");
                 }
-            } catch (e) { }
+            } catch (e) {}
         }, 2000);
         return () => clearInterval(interval);
     }, [workState, isTaskAccepted, isTaskResolved, isTaskSlashed]);
 
-    // NATIVE WEBSOCKET FOR ROS 2 (Supports both Active Tasks & Training Mode)
+    // 5. ROS 2 WebSocket Bridge & WASD Input Handler
     useEffect(() => {
         const shouldConnectToRos = (isTaskAccepted && !isTaskResolved && !isTaskSlashed) || isTrainingMode;
 
         if (shouldConnectToRos) {
             const ws = new WebSocket('ws://127.0.0.1:9090');
-            
+
             ws.onopen = () => {
                 setRosConnected(true);
-                ws.send(JSON.stringify({
-                    op: 'advertise',
-                    topic: '/cmd_vel',
-                    type: 'geometry_msgs/TwistStamped'
-                }));
+                ws.send(JSON.stringify({ op: 'advertise', topic: '/cmd_vel', type: 'geometry_msgs/TwistStamped' }));
             };
             ws.onclose = () => setRosConnected(false);
             ws.onerror = () => setRosConnected(false);
             wsRef.current = ws;
 
             const handleKeyDown = (e: KeyboardEvent) => {
-                if (e.repeat) return; 
+                if (e.repeat) return;
                 const key = e.key.toLowerCase();
                 if (['w', 'a', 's', 'd'].includes(key)) {
                     activeKeysRef.current = { ...activeKeysRef.current, [key]: true };
-                    setActiveKeys({ ...activeKeysRef.current }); 
+                    setActiveKeys({ ...activeKeysRef.current });
                 }
             };
-            
+
             const handleKeyUp = (e: KeyboardEvent) => {
                 const key = e.key.toLowerCase();
                 if (['w', 'a', 's', 'd'].includes(key)) {
                     activeKeysRef.current = { ...activeKeysRef.current, [key]: false };
-                    setActiveKeys({ ...activeKeysRef.current }); 
+                    setActiveKeys({ ...activeKeysRef.current });
                 }
             };
 
@@ -170,31 +230,20 @@ export default function Home() {
 
             const pubInterval = setInterval(() => {
                 if (ws.readyState !== WebSocket.OPEN) return;
-
                 const keys = activeKeysRef.current;
-                let linear = 0.0;
-                let angular = 0.0;
-                const speed = 0.3; 
-                const turnSpeed = 0.5;
+                let linear = 0.0, angular = 0.0;
+                const speed = 0.3, turnSpeed = 0.5;
 
                 if (keys.w) linear = speed;
                 if (keys.s) linear = -speed;
                 if (keys.a) angular = turnSpeed;
                 if (keys.d) angular = -turnSpeed;
 
-                const msg = {
-                    op: 'publish',
-                    topic: '/cmd_vel',
-                    msg: {
-                        header: { stamp: { sec: 0, nanosec: 0 }, frame_id: 'base_link' },
-                        twist: {
-                            linear: { x: linear, y: 0.0, z: 0.0 },
-                            angular: { x: 0.0, y: 0.0, z: angular }
-                        }
-                    }
-                };
-                ws.send(JSON.stringify(msg));
-            }, 33); 
+                ws.send(JSON.stringify({
+                    op: 'publish', topic: '/cmd_vel',
+                    msg: { header: { stamp: { sec: 0, nanosec: 0 }, frame_id: 'base_link' }, twist: { linear: { x: linear, y: 0.0, z: 0.0 }, angular: { x: 0.0, y: 0.0, z: angular } } }
+                }));
+            }, 33);
 
             return () => {
                 window.removeEventListener('keydown', handleKeyDown);
@@ -208,85 +257,224 @@ export default function Home() {
         }
     }, [isTaskAccepted, isTaskResolved, isTaskSlashed, isTrainingMode]);
 
-    // Solana Transactions
-    const getDiscriminator = async (name: string) => {
-        const hashBuffer = await window.crypto.subtle.digest('SHA-256', new TextEncoder().encode(`global:${name}`));
-        return Buffer.from(new Uint8Array(hashBuffer).slice(0, 8));
-    };
-
+    // -------------------------------------------------------------
+    // ON-CHAIN TRANSACTIONS
+    // -------------------------------------------------------------
     const acceptTask = async () => {
-        if (!publicKey || sessionId === null) return;
-        setStatus("Building Transaction...");
+        if (!publicKey || !wallet || !connected || sessionId === null) {
+            if (!wallet || !connected) {
+                setStatus("⚠️ Wallet not connected. Please connect your wallet first.");
+            } else if (sessionId === null) {
+                setStatus("⚠️ No active incident session found.");
+            }
+            return;
+        }
+
+        console.log("[acceptTask] Starting task acceptance for session:", sessionId, "Wallet:", publicKey.toBase58());
+        setStatus("🔍 Verifying session on Solana Devnet...");
+
         try {
-            const cleanSessionId = parseInt(String(sessionId), 10);
-            const sessionIdBuffer = Buffer.alloc(8);
-            let num = BigInt(cleanSessionId);
-            for (let i = 0; i < 8; i++) { sessionIdBuffer[i] = Number(num & BigInt(0xff)); num >>= BigInt(8); }
-            const [sessionPda] = PublicKey.findProgramAddressSync([Buffer.from("session"), ROBOT_PUBKEY.toBuffer(), sessionIdBuffer], PROGRAM_ID);
-            
-            const discriminator = await getDiscriminator("accept_task");
-            const argsBuffer = Buffer.alloc(8);
-            let bondNum = BigInt(PROFILES[activeProfile].stakeLamports); 
-            for (let i = 0; i < 8; i++) { argsBuffer[i] = Number(bondNum & BigInt(0xff)); bondNum >>= BigInt(8); }
+            const sessionPda = deriveSessionPda(sessionId);
+            console.log("[acceptTask] Derived session PDA:", sessionPda.toBase58());
 
-            const acceptTaskIx = new TransactionInstruction({
-                programId: PROGRAM_ID,
-                keys: [
-                    { pubkey: publicKey, isSigner: true, isWritable: true },      
-                    { pubkey: sessionPda, isSigner: false, isWritable: true },    
-                    { pubkey: SystemProgram.programId, isSigner: false, isWritable: false }, 
-                ],
-                data: Buffer.concat([discriminator, argsBuffer]),
-            });
+            // Auto-retry: wait for on-chain confirmation with backoff
+            let sessionAccountInfo = null;
+            for (let attempt = 0; attempt < 5; attempt++) {
+                console.log(`[acceptTask] Fetching session account info (attempt ${attempt + 1}/5)...`);
+                sessionAccountInfo = await withTimeout(
+                    connection.getAccountInfo(sessionPda, 'confirmed'),
+                    10000,
+                    'Checking on-chain session'
+                );
+                if (sessionAccountInfo) {
+                    console.log("[acceptTask] Session account confirmed on-chain!");
+                    break;
+                }
+                setStatus(`⏳ Waiting for on-chain session confirmation... (${attempt + 1}/5)`);
+                await new Promise(r => setTimeout(r, 2000 * (attempt + 1)));
+            }
+            if (!sessionAccountInfo) {
+                setStatus("❌ Session not found on-chain. Robot incident may still be initializing.");
+                return;
+            }
 
-            const latestBlockhash = await connection.getLatestBlockhash();
-            const transaction = new Transaction().add(acceptTaskIx);
-            transaction.recentBlockhash = latestBlockhash.blockhash;
-            transaction.feePayer = publicKey;
+            setStatus("🔨 Building transaction instruction...");
+            console.log("[acceptTask] Building Anchor instruction...");
+            const program = getProgram();
+            const bondLamports = new BN(PROFILES[activeProfile].stakeLamports);
 
-            setStatus("Awaiting Wallet Approval...");
-            const signature = await sendTransaction(transaction, connection, { skipPreflight: true });
-            
-            setStatus("Confirming on Devnet...");
-            await connection.confirmTransaction({ signature, ...latestBlockhash }, 'confirmed');
+            const acceptTaskIx = await withTimeout<TransactionInstruction>(
+                (program.methods as any)
+                    .acceptTask(bondLamports)
+                    .accounts({
+                        operator: publicKey,
+                        session: sessionPda,
+                        systemProgram: SystemProgram.programId,
+                    })
+                    .instruction(),
+                10000,
+                'Building acceptTask instruction'
+            );
+            console.log("[acceptTask] Instruction built successfully:", acceptTaskIx);
 
-            setIsTaskAccepted(true); 
+            setStatus("🌐 Fetching latest blockhash...");
+            console.log("[acceptTask] Fetching blockhash...");
+            const latestBlockhash = await withTimeout(
+                connection.getLatestBlockhash('confirmed'),
+                15000,
+                'Fetching latest blockhash'
+            );
+            console.log("[acceptTask] Recent blockhash:", latestBlockhash.blockhash);
+
+            setStatus("📝 Assembling transaction...");
+            let signature: string;
+            try {
+                const messageV0 = new TransactionMessage({
+                    payerKey: publicKey,
+                    recentBlockhash: latestBlockhash.blockhash,
+                    instructions: [acceptTaskIx],
+                }).compileToV0Message();
+
+                const transaction = new VersionedTransaction(messageV0);
+                console.log("[acceptTask] Transaction compiled. Calling sendTransaction...");
+
+                setStatus("🔐 Check your wallet extension — approve transaction...");
+                signature = await withTimeout(
+                    sendTransaction(transaction, connection, {
+                        skipPreflight: true,
+                        preflightCommitment: 'confirmed'
+                    }),
+                    60000,
+                    'Wallet approval'
+                );
+            } catch (v0Error: any) {
+                console.warn("[acceptTask] VersionedTransaction failed, attempting legacy Transaction fallback:", v0Error);
+                if (v0Error?.message?.includes("version") || v0Error?.name === "WalletSendTransactionError") {
+                    const legacyTx = new Transaction().add(acceptTaskIx);
+                    legacyTx.recentBlockhash = latestBlockhash.blockhash;
+                    legacyTx.feePayer = publicKey;
+                    setStatus("🔐 Check your wallet extension — approve transaction (legacy mode)...");
+                    signature = await withTimeout(
+                        sendTransaction(legacyTx, connection, {
+                            skipPreflight: true,
+                            preflightCommitment: 'confirmed'
+                        }),
+                        60000,
+                        'Wallet approval'
+                    );
+                } else {
+                    throw v0Error;
+                }
+            }
+            console.log("[acceptTask] Transaction sent! Signature:", signature);
+
+            setStatus("⏳ Confirming transaction on Devnet...");
+            const confirmation = await withTimeout(
+                pollSignatureConfirmation(connection, signature, "confirmed", 30000),
+                30000,
+                "Transaction confirmation"
+            );
+            if (confirmation.status === "timeout" || confirmation.status === "expired") {
+                throw new Error(confirmation.reason);
+            }
+            console.log(`[acceptTask] Transaction ${confirmation.status}:`, confirmation.signature);
+
+            setIsTaskAccepted(true);
             setStatus("📡 Teleoperation Active: Awaiting vehicle confirmation...");
         } catch (error) {
-            setStatus("❌ Transaction Failed");
+            console.error("[acceptTask] Error:", error);
+            const msg = error instanceof Error ? error.message : String(error);
+            setStatus(`❌ Failed: ${msg.slice(0, 120)}`);
         }
     };
-    
+
     const resolveTask = async () => {
-        if (!publicKey || sessionId === null) return;
-        setStatus("Building Claim Transaction...");
+        if (!publicKey || !wallet || !connected || sessionId === null) {
+            setStatus("⚠️ Wallet not connected.");
+            return;
+        }
+        setStatus("🔨 Preparing claim transaction...");
+
         try {
-            const cleanSessionId = parseInt(String(sessionId), 10);
-            const sessionIdBuffer = Buffer.alloc(8);
-            let num = BigInt(cleanSessionId);
-            for (let i = 0; i < 8; i++) { sessionIdBuffer[i] = Number(num & BigInt(0xff)); num >>= BigInt(8); }
-            const [sessionPda] = PublicKey.findProgramAddressSync([Buffer.from("session"), ROBOT_PUBKEY.toBuffer(), sessionIdBuffer], PROGRAM_ID);
-            
-            const discriminator = await getDiscriminator("resolve_task");
-            const telemetryHash = new Uint8Array(32); window.crypto.getRandomValues(telemetryHash);
-            
-            const resolveTaskIx = new TransactionInstruction({
-                programId: PROGRAM_ID,
-                keys: [
-                    { pubkey: publicKey, isSigner: true, isWritable: true },      
-                    { pubkey: sessionPda, isSigner: false, isWritable: true },    
-                ],
-                data: Buffer.concat([discriminator, Buffer.from(telemetryHash)]),
-            });
+            const sessionPda = deriveSessionPda(sessionId);
+            console.log("[resolveTask] Derived session PDA:", sessionPda.toBase58());
+            const program = getProgram();
 
-            const latestBlockhash = await connection.getLatestBlockhash();
-            const transaction = new Transaction().add(resolveTaskIx);
-            transaction.recentBlockhash = latestBlockhash.blockhash;
-            transaction.feePayer = publicKey;
+            const telemetryHash = new Uint8Array(32);
+            window.crypto.getRandomValues(telemetryHash);
 
-            setStatus("Awaiting Wallet Approval...");
-            const signature = await sendTransaction(transaction, connection, { skipPreflight: true });
-            await connection.confirmTransaction({ signature, ...latestBlockhash }, 'confirmed');
+            setStatus("🔨 Building resolution instruction...");
+            // Using Array.from bypasses browser Buffer polyfill serialization hazards
+            const resolveTaskIx = await withTimeout<TransactionInstruction>(
+                (program.methods as any)
+                    .resolveTask(Array.from(telemetryHash))
+                    .accounts({
+                        operator: publicKey,
+                        session: sessionPda,
+                    })
+                    .instruction(),
+                10000,
+                'Building resolveTask instruction'
+            );
+
+            setStatus("🌐 Fetching latest blockhash...");
+            const latestBlockhash = await withTimeout(
+                connection.getLatestBlockhash('confirmed'),
+                15000,
+                'Fetching latest blockhash'
+            );
+
+            setStatus("📝 Assembling claim transaction...");
+            let signature: string;
+            try {
+                const messageV0 = new TransactionMessage({
+                    payerKey: publicKey,
+                    recentBlockhash: latestBlockhash.blockhash,
+                    instructions: [resolveTaskIx],
+                }).compileToV0Message();
+
+                const transaction = new VersionedTransaction(messageV0);
+
+                setStatus("🔐 Check your wallet extension — approve claim...");
+                signature = await withTimeout(
+                    sendTransaction(transaction, connection, {
+                        skipPreflight: true,
+                        preflightCommitment: 'confirmed'
+                    }),
+                    60000,
+                    'Wallet approval'
+                );
+            } catch (v0Error: any) {
+                console.warn("[resolveTask] VersionedTransaction failed, attempting legacy Transaction fallback:", v0Error);
+                if (v0Error?.message?.includes("version") || v0Error?.name === "WalletSendTransactionError") {
+                    const legacyTx = new Transaction().add(resolveTaskIx);
+                    legacyTx.recentBlockhash = latestBlockhash.blockhash;
+                    legacyTx.feePayer = publicKey;
+                    setStatus("🔐 Check your wallet extension — approve claim (legacy mode)...");
+                    signature = await withTimeout(
+                        sendTransaction(legacyTx, connection, {
+                            skipPreflight: true,
+                            preflightCommitment: 'confirmed'
+                        }),
+                        60000,
+                        'Wallet approval'
+                    );
+                } else {
+                    throw v0Error;
+                }
+            }
+
+            setStatus("⏳ Confirming claim on Devnet...");
+
+            const confirmation = await withTimeout(
+                pollSignatureConfirmation(connection, signature, "confirmed", 30000),
+                30000,
+                "Transaction confirmation"
+            );
+
+            if (confirmation.status === "timeout" || confirmation.status === "expired") {
+                throw new Error(confirmation.reason);
+            }
 
             setStatus("🎉 Bounty Claimed! Funds transferred.");
             setResolveSignature(signature);
@@ -298,21 +486,32 @@ export default function Home() {
             setTotalEarnings(prev => prev + PROFILES[activeProfile].bountySol);
             setWeeklyEarnings(prev => { const newData = [...prev]; newData[6] += PROFILES[activeProfile].bountySol; return newData; });
         } catch (error) {
-            setIsTaskSlashed(true);
-            setStatus("❌ Claim Failed: Session expired or bond slashed.");
+            console.error("[resolveTask] Error:", error);
+            const msg = error instanceof Error ? error.message : String(error);
+            setStatus(`❌ Claim failed: ${msg.slice(0, 120)}`);
         }
     };
 
     const returnToLobby = async () => {
         setIsTaskAccepted(false); setIsRobotReady(false); setIsTaskResolved(false);
         setIsTaskSlashed(false); setSlashSignature(null); setResolveSignature(null);
+        setIsTaskCleared(false);
         setShowReceiptModal(false); setWorkState('lobby');
-        await fetch('/api/robot', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ready: false, slashed: false, tx: null }) }).catch(e => console.error(e));
+        await fetch('/api/robot', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ready: false, slashed: false, resolved: false, tx: null }) }).catch(e => console.error(e));
+        await fetch('/api/session', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status: 'idle' }) }).catch(e => console.error(e));
     };
 
-    // Shared Video Feed Component (Used in both Work and Training tabs)
-    const LiveVideoFeed = () => (
+    const LiveVideoFeed = ({ isLocked = false }: { isLocked?: boolean }) => (
         <div className="mb-8 bg-black rounded-xl overflow-hidden border border-slate-700 relative shadow-inner">
+            {isLocked && (
+                <div className="absolute inset-0 z-20 bg-slate-950/80 backdrop-blur-sm flex flex-col items-center justify-center border-2 border-red-500/50 rounded-xl animate-in fade-in duration-300">
+                    <span className="text-5xl mb-4 animate-bounce">🔒</span>
+                    <h3 className="text-xl font-bold text-red-400 mb-2 tracking-widest">TELEMETRY LOCKED</h3>
+                    <p className="text-slate-300 text-sm max-w-sm text-center">
+                        Liability unassigned. Sign the on-chain transaction to unlock WASD controls and assume command.
+                    </p>
+                </div>
+            )}
             <div className="absolute top-0 left-0 w-full h-8 bg-gradient-to-b from-black/80 to-transparent z-10 flex justify-between items-center px-4 pointer-events-none">
                 <div className="flex items-center gap-2">
                     <div className={`w-2 h-2 rounded-full ${rosConnected ? 'bg-emerald-500 animate-pulse' : 'bg-red-500'}`}></div>
@@ -326,7 +525,6 @@ export default function Home() {
                     </span>
                 </div>
             </div>
-
             <div className="aspect-video relative w-full flex items-center justify-center bg-slate-900 cursor-crosshair">
                 <img
                     src="http://127.0.0.1:8080/stream?topic=/camera/image_raw&quality=50&width=640&height=480"
@@ -343,7 +541,6 @@ export default function Home() {
                     <p className="text-slate-600 text-xs mt-1">Start ROS 2 web_video_server on port 8080</p>
                 </div>
             </div>
-
             <div className="absolute bottom-4 left-0 w-full flex justify-center z-10 pointer-events-none">
                 <div className="bg-black/60 backdrop-blur border border-slate-700/50 p-2 rounded-lg flex flex-col items-center gap-1 shadow-2xl">
                     <div className={`w-10 h-10 rounded border ${activeKeys['w'] ? 'bg-indigo-600 border-indigo-400 text-white' : 'bg-slate-800 border-slate-600 text-slate-400'} flex items-center justify-center font-bold transition-all`}>W</div>
@@ -382,8 +579,8 @@ export default function Home() {
     }
 
     const currentProfile = PROFILES[activeProfile];
-    const maxChartVal = Math.max(...weeklyData, 5); 
-    const maxEarningsVal = Math.max(...weeklyEarnings, 2.0); 
+    const maxChartVal = Math.max(...weeklyData, 5);
+    const maxEarningsVal = Math.max(...weeklyEarnings, 2.0);
     const last7Days = Array.from({ length: 7 }).map((_, i) => {
         const d = new Date(); d.setDate(d.getDate() - (6 - i));
         return new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric' }).format(d);
@@ -391,7 +588,6 @@ export default function Home() {
 
     return (
         <main className="flex min-h-screen bg-slate-950 font-mono">
-            {/* SIDEBAR NAVIGATION */}
             <aside className="w-64 border-r border-slate-800 bg-slate-900/50 flex flex-col hidden md:flex">
                 <div className="p-6 border-b border-slate-800">
                     <h1 className="font-bold text-emerald-400 text-xl tracking-tight">Fallback</h1>
@@ -420,7 +616,6 @@ export default function Home() {
                 </div>
             </aside>
 
-            {/* MAIN CONTENT AREA */}
             <section className="flex-1 flex flex-col h-screen overflow-y-auto">
                 <header className="md:hidden p-4 border-b border-slate-800 bg-slate-900 flex justify-between items-center">
                     <h1 className="font-bold text-emerald-400">Fallback</h1>
@@ -432,13 +627,12 @@ export default function Home() {
                 </header>
 
                 <div className="p-6 md:p-12 max-w-4xl w-full mx-auto pb-24">
-                    
-                    {/* EARNINGS TAB */}
+
                     {currentTab === 'earnings' && (
                         <div className="animate-in fade-in slide-in-from-bottom-4 duration-500">
                             <h2 className="text-3xl font-bold text-white mb-2">Earnings Dashboard</h2>
                             <p className="text-slate-400 mb-8">Track your teleoperation bounties and SLA performance.</p>
-                            
+
                             <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-8">
                                 <div className="bg-slate-900 p-6 rounded-xl border border-slate-800">
                                     <p className="text-sm text-slate-400 mb-1">Session Earnings</p>
@@ -455,7 +649,6 @@ export default function Home() {
                             </div>
 
                             <div className="flex flex-col gap-6">
-                                {/* GRAPH 1: TASK VOLUME */}
                                 <div className="bg-slate-900 p-6 rounded-xl border border-slate-800 h-64 flex flex-col justify-end gap-2 relative">
                                     <p className="absolute top-6 left-6 text-slate-400 text-sm">Task Volume (Last 7 Days)</p>
                                     {tasksResolved === 0 && <div className="absolute inset-0 flex items-center justify-center pointer-events-none"><p className="text-slate-600 text-sm">No tasks completed yet. Go online to start earning!</p></div>}
@@ -478,7 +671,6 @@ export default function Home() {
                                     </div>
                                 </div>
 
-                                {/* GRAPH 2: EARNINGS (SOL) */}
                                 <div className="bg-slate-900 p-6 rounded-xl border border-slate-800 h-64 flex flex-col justify-end gap-2 relative">
                                     <p className="absolute top-6 left-6 text-slate-400 text-sm">Earnings Output (SOL)</p>
                                     {totalEarnings === 0 && <div className="absolute inset-0 flex items-center justify-center pointer-events-none"><p className="text-slate-600 text-sm">No earnings recorded yet.</p></div>}
@@ -504,28 +696,26 @@ export default function Home() {
                         </div>
                     )}
 
-                    {/* TRAINING TAB */}
                     {currentTab === 'training' && (
                         <div className="animate-in fade-in slide-in-from-bottom-4 duration-500">
-                            
                             {!isTrainingMode ? (
                                 <>
                                     <h2 className="text-3xl font-bold text-white mb-2">Training Hub</h2>
                                     <p className="text-slate-400 mb-8">Test your connection and practice teleoperation in a simulated environment.</p>
-                                    
+
                                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                                         <div className="bg-slate-900 p-6 rounded-xl border border-emerald-500/50 shadow-[0_0_15px_rgba(16,185,129,0.1)] relative overflow-hidden transition-all hover:border-emerald-400 group">
                                             <div className="absolute top-2 right-2 bg-emerald-500/20 text-emerald-400 text-xs px-2 py-1 rounded font-bold">Simulator Active</div>
                                             <h3 className="font-bold text-white text-lg mb-2">Class 1: Sandbox Simulator</h3>
                                             <p className="text-sm text-slate-400 mb-6">Test WS_LINK connection and practice WASD maneuvering in the local Gazebo physics engine.</p>
-                                            <button 
-                                                onClick={() => setIsTrainingMode(true)} 
+                                            <button
+                                                onClick={() => setIsTrainingMode(true)}
                                                 className="px-4 py-3 bg-emerald-600 hover:bg-emerald-500 text-white font-bold rounded-lg text-sm w-full transition-all shadow-lg group-hover:scale-[1.02]"
                                             >
                                                 Enter Simulator ↗
                                             </button>
                                         </div>
-                                        
+
                                         <div className="bg-slate-900 p-6 rounded-xl border border-slate-700 relative overflow-hidden">
                                             <div className="absolute top-2 right-2 bg-slate-800 text-slate-400 text-xs px-2 py-1 rounded">Locked</div>
                                             <h3 className="font-bold text-slate-300 text-lg mb-2">Class 2: Robotaxi / Street</h3>
@@ -543,15 +733,15 @@ export default function Home() {
                                             </h2>
                                             <p className="text-slate-400 text-sm">Testing direct WebSocket pipeline to localhost:9090</p>
                                         </div>
-                                        <button 
+                                        <button
                                             onClick={() => setIsTrainingMode(false)}
                                             className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-white rounded-lg transition-all text-sm font-medium border border-slate-600"
                                         >
                                             Exit Simulator
                                         </button>
                                     </div>
-                                    
-                                    <LiveVideoFeed />
+
+                                    <LiveVideoFeed isLocked={false} />
 
                                     <div className="bg-slate-900 p-5 rounded-xl border border-slate-800">
                                         <h4 className="font-bold text-white mb-2">Training Checklist:</h4>
@@ -571,7 +761,6 @@ export default function Home() {
                         </div>
                     )}
 
-                    {/* WORK TAB */}
                     {currentTab === 'work' && (
                         <div className="animate-in fade-in slide-in-from-bottom-4 duration-500">
                             {workState === 'lobby' && (
@@ -611,7 +800,7 @@ export default function Home() {
                             {workState === 'active' && (
                                 <div className={`border ${currentProfile.boxBorder} ${currentProfile.boxBg} p-6 md:p-8 rounded-2xl shadow-2xl relative overflow-hidden animate-in slide-in-from-right-8 duration-500`}>
                                     <div className={`absolute top-0 left-0 w-1.5 h-full ${currentProfile.accent}`}></div>
-                                    
+
                                     <div className="flex justify-between items-start mb-6">
                                         <div>
                                             <span className={`${currentProfile.tagColor} px-3 py-1 rounded-full text-xs font-bold border uppercase tracking-wider mb-3 inline-block animate-pulse`}>Deadlock Detected</span>
@@ -625,19 +814,17 @@ export default function Home() {
                                         </div>
                                     </div>
 
-                                    {/* --- LIVE TELEOPERATION DASHBOARD --- */}
-                                    {isTaskAccepted && !isTaskResolved && !isTaskSlashed && (
-                                        <LiveVideoFeed />
+                                    {!isTaskResolved && !isTaskSlashed && (
+                                        <LiveVideoFeed isLocked={!isTaskAccepted} />
                                     )}
 
-                                    {/* --- RESTORED: SLAUGHTER PROTOCOL UI --- */}
                                     {isTaskSlashed && (
                                         <div className="mb-8 p-5 bg-red-950/80 border border-red-500 rounded-xl text-red-200 animate-in fade-in zoom-in-95 duration-300">
                                             <p className="font-bold flex items-center gap-2 text-lg text-red-400 mb-2">
                                                 🚨 SLAUGHTER PROTOCOL EXECUTED
                                             </p>
                                             <p className="mb-4 text-sm">
-                                                The operational window expired. The vehicle executed <code className="bg-red-900/60 px-1.5 py-0.5 rounded text-red-300">cancel_timeout</code>, 
+                                                The operational window expired. The vehicle executed <code className="bg-red-900/60 px-1.5 py-0.5 rounded text-red-300">cancel_timeout</code>,
                                                 reclaimed its bounty, and <strong>slashed your {currentProfile.stakeSol} SOL stake</strong>.
                                             </p>
                                             {slashSignature && (
@@ -654,9 +841,11 @@ export default function Home() {
                                             {isTaskSlashed ? (
                                                 <button onClick={returnToLobby} className="px-6 py-3 bg-slate-800 hover:bg-slate-700 text-white font-bold rounded-lg shadow-lg transition-all border border-slate-600">Return to Lobby ⟳</button>
                                             ) : !isTaskAccepted ? (
-                                                <button onClick={acceptTask} className="px-8 py-3 bg-indigo-600 hover:bg-indigo-500 text-white font-bold rounded-lg shadow-[0_0_15px_rgba(79,70,229,0.4)] transition-all">Stake {currentProfile.stakeSol} SOL & Accept</button>
+                                                <button onClick={acceptTask} className="px-8 py-3 bg-indigo-600 hover:bg-indigo-500 text-white font-bold rounded-lg shadow-[0_0_15px_rgba(79,70,229,0.4)] transition-all animate-pulse hover:animate-none">Stake {currentProfile.stakeSol} SOL & Accept</button>
                                             ) : !isRobotReady ? (
                                                 <button disabled className="px-8 py-3 bg-slate-800 text-slate-400 font-bold rounded-lg cursor-not-allowed flex items-center justify-center gap-3 border border-slate-700"><span className="animate-spin text-xl">⏳</span> Awaiting Vehicle...</button>
+                                            ) : !isTaskCleared ? (
+                                                <button disabled className="px-8 py-3 bg-indigo-900/40 text-indigo-400 font-bold rounded-lg cursor-not-allowed flex items-center justify-center gap-3 border border-indigo-700/50"><span className="animate-spin text-xl">⚙️</span> Teleoperation Active...</button>
                                             ) : !isTaskResolved ? (
                                                 <button onClick={resolveTask} className="px-8 py-3 bg-emerald-600 hover:bg-emerald-500 text-white font-bold rounded-lg shadow-[0_0_15px_rgba(16,185,129,0.4)] transition-all border border-emerald-400">Claim {currentProfile.bountySol} SOL</button>
                                             ) : (
