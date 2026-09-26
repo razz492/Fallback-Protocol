@@ -131,7 +131,7 @@ async def main():
         await client.close()
         return
 
-    # 3. NOW fire the signal to the Dashboard (local file + ngrok)
+    # 3. NOW fire the signal to the Dashboard
     print(f"🚨 [🤖 ROBOT] Alerting Dispatch Server...")
     alert_session_locked(session_id)
 
@@ -140,8 +140,6 @@ async def main():
     print("🔓 [🤖 ROBOT] Safety locks disengaged. Yielding /cmd_vel control to remote operator...")
 
     signal_dashboard_ready()
-
-    await client.close()
 
     await client.close()
 
