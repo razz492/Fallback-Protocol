@@ -57,6 +57,18 @@ export default function Home() {
     const [showWalletDetails, setShowWalletDetails] = useState<boolean>(false);
     const [showDisconnectConfirm, setShowDisconnectConfirm] = useState<boolean>(false);
 
+    // ── Diagnostic test (hidden, ?debug=true only) ──
+    // Defer useSearchParams to useEffect — calling it during render breaks
+    // Next.js prerender. isDebugMode defaults to false (SSR-safe), then
+    // updated on mount when the URL is available client-side.
+    const [isDebugMode, setIsDebugMode] = useState<boolean>(false);
+    const [debugTxStatus, setDebugTxStatus] = useState<string>('');
+    const [debugTxSignature, setDebugTxSignature] = useState<string | null>(null);
+    useEffect(() => {
+        const params = new URLSearchParams(window.location.search);
+        setIsDebugMode(params.get('debug') === 'true');
+    }, []);
+
     const [isTrainingMode, setIsTrainingMode] = useState<boolean>(false);
 
     const [status, setStatus] = useState<string>("Awaiting Operator Action...");
@@ -568,10 +580,52 @@ export default function Home() {
     const returnToLobby = async () => {
         setIsTaskAccepted(false); setIsRobotReady(false); setIsTaskResolved(false);
         setIsTaskSlashed(false); setSlashSignature(null); setResolveSignature(null);
-        setIsTaskCleared(false);
-        setShowReceiptModal(false); setWorkState('lobby');
+        setIsTaskCleared(false); setShowReceiptModal(false); setWorkState('lobby');
         await fetch('/api/robot', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ready: false, slashed: false, resolved: false, tx: null }) }).catch(e => console.error(e));
         await fetch('/api/session', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status: 'idle' }) }).catch(e => console.error(e));
+    };
+
+    // ── Diagnostic: trivial self-transfer (hidden, ?debug=true only) ──
+    const runDiagnosticTransfer = async () => {
+        if (!publicKey || !wallet || !connected) {
+            setDebugTxStatus('⛔ Wallet not connected.');
+            return;
+        }
+        setDebugTxStatus('Building 0.001 SOL self-transfer...');
+        try {
+            const transferIx = SystemProgram.transfer({
+                fromPubkey: publicKey,
+                toPubkey: publicKey,
+                lamports: 1_000_000, // 0.001 SOL
+            });
+            const latestBlockhash = await connection.getLatestBlockhash('confirmed');
+            const messageV0 = new TransactionMessage({
+                payerKey: publicKey,
+                recentBlockhash: latestBlockhash.blockhash,
+                instructions: [
+                    ComputeBudgetProgram.setComputeUnitLimit({ units: 200_000 }),
+                    transferIx,
+                ],
+            }).compileToV0Message();
+            const transaction = new VersionedTransaction(messageV0);
+            console.log('[Diagnostic] Built self-transfer:', {
+                from: publicKey.toBase58(),
+                to: publicKey.toBase58(),
+                lamports: 1_000_000,
+                blockhash: latestBlockhash.blockhash.toString(),
+            });
+            setDebugTxStatus('Sending via sendTransaction (same as acceptTask)...');
+            const sig = await sendTransaction(transaction, connection, {
+                skipPreflight: true,
+                preflightCommitment: 'confirmed',
+            });
+            setDebugTxSignature(sig);
+            setDebugTxStatus(`Sent! Signature: ${sig.slice(0, 16)}...`);
+            console.log('[Diagnostic] Signature:', sig);
+        } catch (err) {
+            setDebugTxStatus(`❌ Error: ${err instanceof Error ? err.message : String(err)}`);
+            console.error('[Diagnostic] Error:', err);
+        }
     };
 
     const LiveVideoFeed = ({ isLocked = false }: { isLocked?: boolean }) => (
@@ -676,6 +730,33 @@ export default function Home() {
     return (
         <main className="flex min-h-screen bg-slate-950 font-mono">
             <aside className="w-64 border-r border-slate-800 bg-slate-900/50 flex flex-col hidden md:flex">
+                {/* ── Hidden diagnostic button (top-right corner of sidebar, ?debug=true only) ── */}
+                {isDebugMode && (
+                    <div className="absolute top-4 right-4 z-10">
+                        <div className="bg-slate-900 border border-red-700/50 rounded-lg p-2 shadow-lg animate-in fade-in duration-300">
+                            <div className="text-center">
+                                <p className="text-[10px] font-bold text-red-400 uppercase tracking-wider mb-1">Diagnostic</p>
+                                <button
+                                    onClick={runDiagnosticTransfer}
+                                    disabled={!publicKey || !connected}
+                                    className="w-full text-[11px] py-1.5 bg-red-900/40 hover:bg-red-800/60 text-red-200 font-semibold rounded disabled:opacity-40 disabled:cursor-not-allowed transition-all border border-red-700/30"
+                                >
+                                    🧪 Self-Transfer 0.001 SOL
+                                </button>
+                                {debugTxStatus && (
+                                    <p className="text-[10px] text-slate-400 mt-1 truncate">{debugTxStatus}</p>
+                                )}
+                                {debugTxSignature && (
+                                    <a href={`https://explorer.solana.com/tx/${debugTxSignature}?cluster=devnet`}
+                                       target="_blank" rel="noopener noreferrer"
+                                       className="text-[10px] text-blue-400 hover:underline truncate block mt-0.5">
+                                        {debugTxSignature.slice(0, 16)}...
+                                    </a>
+                                )}
+                            </div>
+                        </div>
+                    </div>
+                )}
                 <div className="p-6 border-b border-slate-800">
                     <h1 className="font-bold text-emerald-400 text-xl tracking-tight">Fallback</h1>
                     <p className="text-xs text-slate-500 mt-1">Operator Console</p>
